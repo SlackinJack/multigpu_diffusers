@@ -21,6 +21,7 @@ logging.getLogger("flask").disabled = True
 app = Flask(__name__)
 base = None
 single_config = None
+enable_cache_dit_runonce = False
 
 
 def __initialize_environment():
@@ -88,7 +89,7 @@ def __move_pipe_module(module, dev):
         c_device = torch.device(mod.device)
         t_device = torch.device(dev)
         if c_device != t_device:
-            vars(base.pipe)[module] = mod.to(device=t_device)
+            vars(base.pipe)[module] = mod.to(t_device)
             if "cpu" in dev:
                 vars(base.pipe)[module] = mod.cpu()
             elif "cuda" in dev:
@@ -104,8 +105,10 @@ def __move_pipe_module(module, dev):
 def __move_pipe(device):
     global base
 
-    if base.applied.get("group_offload_config") is not None:
-        return 'Group offloading active - not offloading', 500
+    if len(base.offloaded_modules) > 0:
+        return 'ℹ️ Group offloading active - not offloading', 500
+
+    if base.pipeline_type in ["qwen21"]: return "ℹ️ Pipeline does not need to be moved", 200
 
     flag_vae_sliced = False
     if base.applied.get("enable_vae_slicing") is not None and base.applied.get("enable_vae_slicing") == True:
@@ -132,7 +135,7 @@ def __move_pipe(device):
                 case 0: moved.append(k)
                 case 1: not_moved.append(k)
                 case -1: alr_moved.append(k)
-    base.pipe = base.pipe.to(device=torch.device(device))
+    base.pipe = base.pipe.to(torch.device(device))
 
     if flag_vae_sliced: base.pipe.enable_vae_slicing()
     if flag_vae_tiled: base.pipe.enable_vae_tiling()
@@ -149,7 +152,7 @@ def __move_pipe(device):
 
 
 def __apply_pipeline_parallel(data):
-    global base, single_config
+    global base, single_config, enable_cache_dit_runonce
     # Params:
     # deep_cache
     # deep_cache_interval
@@ -160,30 +163,58 @@ def __apply_pipeline_parallel(data):
     with torch.no_grad():
         result = base.setup_pipeline(data, backend_name="single")
         if result[1] == 200:
+            enable_cache_dit_runonce = False
             single_config = config
         return result
 
 
 def __generate_image_parallel(data):
-    global base, single_config
+    global base, single_config, enable_cache_dit_runonce
     data = base.prepare_inputs(data)
 
     with torch.inference_mode():
-        __move_pipe("cuda")
+        if len(base.offloaded_modules) == 0:
+            __move_pipe("cuda")
         torch.cuda.reset_peak_memory_stats()
 
         # inference kwargs
         kwargs = base.setup_inference(data, can_use_compel=True)
 
+        # caching
+        enable_deepcache = base.can_use_deepcache == True and single_config.get("deepcache_config") is not None
+        enable_cache_dit = base.can_use_cachedit == True and single_config.get("cache_dit_config") is not None
+        deepcache_config = None
+        cache_dit_config = None
+        if enable_deepcache:    deepcache_config = single_config.get("deepcache_config")
+        if enable_cache_dit:    cache_dit_config = single_config.get("cache_dit_config")
+
         # inference
-        enable_deepcache = base.can_use_deepcache == True and single_config.get("deep_cache") == True
-        enable_cache_dit = base.can_use_cachedit == True and single_config.get("cache_dit") == True
         with torch.autocast(device_type="cuda", dtype=base.infer_dtype):
             if enable_deepcache:
                 helper = DeepCacheSDHelper(pipe=base.pipe)
-                helper.set_params(cache_interval=single_config.get("deep_cache_interval"), cache_branch_id=single_config.get("deep_cache_id"))
+                dc_config = get_deepcache_config(deepcache_config)
+                helper.set_params(**dc_config)
                 helper.enable()
                 base.log(0, "ℹ️ DeepCache enabled", rank_0_only=False)
+            if enable_cache_dit:
+                cd_config = get_cache_dit_config(cache_dit_config)
+                if not enable_cache_dit_runonce:
+                    cache_dit.enable_cache(
+                        base.pipe,
+                        num_inference_steps=kwargs["num_inference_steps"],
+                        verbose=False,
+                        **cd_config,
+                    )
+                    enable_cache_dit_runonce = True
+                    base.log(0, "ℹ️ CacheDiT enabled", rank_0_only=False)
+                else:
+                    base.log(0, "ℹ️ Using CacheDiT", rank_0_only=False)
+                cache_dit.refresh_context(
+                    base.pipe.transformer,
+                    num_inference_steps=kwargs["num_inference_steps"],
+                    verbose=False,
+                    **cd_config,
+                )
             start_time = time.perf_counter()
             output = base.pipe(**kwargs)
             end_time = time.perf_counter()
@@ -203,11 +234,9 @@ def __generate_image_parallel(data):
                 else:
                     output_images = output.images
                     output_images = base.get_output_images(output_images, data)
-                    flag = base.pipe.vae.device == torch.device("cpu")
-                    if flag: base.pipe.vae = base.pipe.vae.to(device=output_images.device)
                     images = base.convert_latent_to_image(output_images)
                     latents = base.convert_latent_to_output_latent(output_images)
-                    if flag: base.pipe.vae = base.pipe.vae.to(device="cpu")
+
                     return { "message": "OK", "output": pickle_and_encode_b64(images[0]), "latent": pickle_and_encode_b64(latents), "is_image": True }
             else:
                 output = output.frames[0]

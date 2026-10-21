@@ -14,6 +14,7 @@ from AsyncDiff.asyncdiff.async_animate import AsyncDiff as AsyncDiffAnimateDiff
 from AsyncDiff.asyncdiff.async_flux1 import AsyncDiff as AsyncDiffFlux1
 from AsyncDiff.asyncdiff.async_flux2 import AsyncDiff as AsyncDiffFlux2
 from AsyncDiff.asyncdiff.async_krea2 import AsyncDiff as AsyncDiffKrea2
+from AsyncDiff.asyncdiff.async_qwen21 import AsyncDiff as AsyncDiffQwen21
 from AsyncDiff.asyncdiff.async_sd import AsyncDiff as AsyncDiffStableDiffusion
 from AsyncDiff.asyncdiff.async_sd3 import AsyncDiff as AsyncDiffStableDiffusion3
 from AsyncDiff.asyncdiff.async_wan import AsyncDiff as AsyncDiffWan
@@ -166,7 +167,7 @@ def __move_pipe_module(module, dev):
         c_device = torch.device(mod.device)
         t_device = torch.device(dev)
         if c_device != t_device:
-            vars(base.pipe)[module] = mod.to(device=t_device)
+            vars(base.pipe)[module] = mod.to(t_device)
             if "cpu" in str(dev):
                 vars(base.pipe)[module] = mod.cpu()
             elif "cuda" in str(dev):
@@ -182,8 +183,10 @@ def __move_pipe_module(module, dev):
 def __move_pipe(device):
     global base
 
-    if base.applied.get("group_offload_config") is not None:
-        return 'Group offloading active - not offloading', 500
+    if len(base.offloaded_modules) > 0:
+        return 'ℹ️ Group offloading active - not offloading', 500
+
+    if base.pipeline_type in ["qwen21"]: return "ℹ️ Pipeline does not need to be moved", 200
 
     flag_vae_sliced = False
     if base.applied.get("enable_vae_slicing") is not None and base.applied.get("enable_vae_slicing") == True:
@@ -210,7 +213,7 @@ def __move_pipe(device):
                 case 0: moved.append(k)
                 case 1: not_moved.append(k)
                 case -1: alr_moved.append(k)
-    base.pipe = base.pipe.to(device=torch.device(device))
+    base.pipe = base.pipe.to(torch.device(device))
 
     if flag_vae_sliced: base.pipe.enable_vae_slicing()
     if flag_vae_tiled: base.pipe.enable_vae_tiling()
@@ -250,6 +253,8 @@ def __apply_pipeline_parallel(data):
                 ad_class = AsyncDiffFlux2
             elif base.pipeline_type in ["krea2"]:
                 ad_class = AsyncDiffKrea2
+            elif base.pipeline_type in ["qwen21"]:
+                ad_class = AsyncDiffQwen21
             elif base.pipeline_type in ["sd3"]:
                 ad_class = AsyncDiffStableDiffusion3
             elif base.pipeline_type in ["wani2v", "want2v"]:
