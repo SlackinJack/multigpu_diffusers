@@ -12,20 +12,29 @@ from torchvision.transforms import ToPILImage, ToTensor
 def clean_override_function(klass, target_func_name):
     module = inspect.getmodule(klass)
     if module is not None:
-        if hasattr(module, f'old_{target_func_name}'):
-            setattr(module, target_func_name, getattr(module, f'old_{target_func_name}'))
-            delattr(module, f'old_{target_func_name}')
-        if hasattr(module, f'new_{target_func_name}'):
-            delattr(module, f'new_{target_func_name}')
+        if hasattr(module, f"old_{target_func_name}"):
+            setattr(
+                module,
+                target_func_name,
+                getattr(module, f"old_{target_func_name}"),
+            )
+            delattr(module, f"old_{target_func_name}")
+        if hasattr(module, f"new_{target_func_name}"):
+            delattr(module, f"new_{target_func_name}")
     return
 
 
-def override_function(klass, target_func_name, func, clean_old_func=True, old_func_new_name=None):
+def override_function(
+    klass, target_func_name, func, clean_old_func=True, old_func_new_name=None
+):
     module = inspect.getmodule(klass)
-    if clean_old_func == True:      clean_override_function(klass, target_func_name)
+    if clean_old_func is True:
+        clean_override_function(module, target_func_name)
     old_func = getattr(module, target_func_name, None)
-    if old_func_new_name is None:   setattr(module, f'old_{target_func_name}', old_func)
-    else:                           setattr(module, old_func_new_name, old_func)
+    if old_func_new_name is None:
+        setattr(module, f"old_{target_func_name}", old_func)
+    else:
+        setattr(module, old_func_new_name, old_func)
     setattr(module, target_func_name, func)
     return
 
@@ -35,28 +44,49 @@ def get_function_from_class(klass, target_func_name):
     return getattr(module, target_func_name, None)
 
 
+def check_function_kwargs(func, kwarg):
+    return kwarg in set(inspect.signature(func).parameters.keys())
+
+
 def get_torch_type(t):
     match t:
-        case "bf16":    return torch.bfloat16
-        case "fp8":     return torch.float8_e4m3fn
-        case "fp16":    return torch.float16
-        case "fp32":    return torch.float32
-        case "int1":    return torch.uint1
-        case "int2":    return torch.uint2
-        case "int3":    return torch.uint3
-        case "int4":    return torch.uint4
-        case "int5":    return torch.uint5
-        case "int6":    return torch.uint6
-        case "int7":    return torch.uint7
-        case "int8":    return torch.uint8
-        case "int16":   return torch.uint16
-        case "int32":   return torch.uint32
-        case "bool":    return torch.bool
-        case _:         return None
+        case "bf16":
+            return torch.bfloat16
+        case "fp8":
+            return torch.float8_e4m3fn
+        case "fp16":
+            return torch.float16
+        case "fp32":
+            return torch.float32
+        case "int1":
+            return torch.uint1
+        case "int2":
+            return torch.uint2
+        case "int3":
+            return torch.uint3
+        case "int4":
+            return torch.uint4
+        case "int5":
+            return torch.uint5
+        case "int6":
+            return torch.uint6
+        case "int7":
+            return torch.uint7
+        case "int8":
+            return torch.uint8
+        case "int16":
+            return torch.uint16
+        case "int32":
+            return torch.uint32
+        case "bool":
+            return torch.bool
+        case _:
+            return None
 
 
 def clean():
     gc.collect()
+    torch.cuda.synchronize()
     torch.cuda.empty_cache()
     return
 
@@ -65,7 +95,11 @@ def normalize_latent(x, max_val=3.0):
     max_val = torch.tensor(max_val)
     x = x.detach().clone()
     for i in range(x.shape[0]):
-        x[[i], :] = torch.sqrt(max_val**2 - 1) * x[[i], :] / torch.sqrt(torch.add(x[[i], :]**2, max_val**2 - 1))
+        x[[i], :] = (
+            torch.sqrt(max_val**2 - 1)
+            * x[[i], :]
+            / torch.sqrt(torch.add(x[[i], :] ** 2, max_val**2 - 1))
+        )
         for chl in range(4):
             if x[i, chl, :, :].std() > 1.0:
                 x[i, chl, :, :] /= x[i, chl, :, :].std()
@@ -74,7 +108,13 @@ def normalize_latent(x, max_val=3.0):
 
 def add_alpha_to_latent(latents):
     if latents.shape[1] == 3:
-        alpha = torch.ones(latents.shape[0], 1, latents.shape[2], latents.shape[3], device=latents.device)
+        alpha = torch.ones(
+            latents.shape[0],
+            1,
+            latents.shape[2],
+            latents.shape[3],
+            device=latents.device,
+        )
         latents = torch.cat((latents, alpha), dim=1)
     return latents
 
@@ -86,53 +126,114 @@ def remove_alpha_from_latent(latents):
 
 
 def decode_b64_and_unpickle(b64):
-    if b64 is None: return None
+    if b64 is None:
+        return None
     out = base64.b64decode(b64)
     out = pickle.loads(out)
     return out
 
 
 def pickle_and_encode_b64(obj):
-    if obj is None: return None
+    if obj is None:
+        return None
     out = pickle.dumps(obj)
-    out = base64.b64encode(out).decode('utf-8')
+    out = base64.b64encode(out).decode("utf-8")
     return out
 
 
 def convert_b64_to_nhwc_tensor(b64):
-    if b64 is None: return None
+    if b64 is None:
+        return None
     im2 = decode_b64_and_unpickle(b64)
-    tensor_image = ToTensor()(im2)                      # CHW
-    tensor_image = tensor_image.unsqueeze(0)            # CHW -> NCHW
-    tensor_image = tensor_image.permute(0, 2, 3, 1)     # NCHW -> NHWC
+    tensor_image = ToTensor()(im2)  # CHW
+    tensor_image = tensor_image.unsqueeze(0)  # CHW -> NCHW
+    tensor_image = tensor_image.permute(0, 2, 3, 1)  # NCHW -> NHWC
     return tensor_image
 
 
 def convert_image_to_hwc_tensor(image):
-    if image is None: return None
-    tensor = ToTensor()(image)          # CHW
-    tensor = tensor.permute(1, 2, 0)    # CHW -> HWC
+    if image is None:
+        return None
+    tensor = ToTensor()(image)  # CHW
+    tensor = tensor.permute(1, 2, 0)  # CHW -> HWC
     return tensor
 
 
 def convert_tensor_to_b64(tensor):
-    if tensor is None: return None
-    im = tensor.permute(2, 0, 1)        # HWC -> CHW
+    if tensor is None:
+        return None
+    im = tensor.permute(2, 0, 1)  # HWC -> CHW
     im = ToPILImage()(im)
     b64_image = pickle_and_encode_b64(im)
     return b64_image
 
 
-def format_json(str_or_dict_in, indent=4, indent_all=False):
-    if isinstance(str_or_dict_in, dict): str_or_dict_in = json.dumps(str_or_dict_in)
+def format_json(str_or_dict_in, indent=4, indent_all=False, max_length=128):
+    def to_json(obj):
+        return {type(obj).__name__: vars(obj)}
+
+    if isinstance(str_or_dict_in, dict):
+        str_or_dict_in = json.dumps(str_or_dict_in, default=to_json)
     d = json.loads(str_or_dict_in)
-    d = json.dumps(d, indent=indent)
-    if indent_all == True:
+
+    def check_and_rewrite(d):
+        out = {}
+        for k, v in d.items():
+            if isinstance(v, dict):
+                d[k] = check_and_rewrite(v)
+            else:
+                if v is None or v == "null":
+                    continue
+                elif len(str(v)) > max_length:
+                    out[k] = True
+                else:
+                    out[k] = v
+        return out
+
+    d2 = check_and_rewrite(d)
+    d = json.dumps(d2, indent=indent)
+    if indent_all is True:
         d2 = d.split("\n")
         out = ""
         for d3 in d2:
             if len(out) != 0:
-                out += " "*indent
+                out += " " * indent
             out += d3 + "\n"
-        d = out[::-1].replace("\n","",1)[::-1]
+        d = out[::-1].replace("\n", "", 1)[::-1]
     return d
+
+
+def format_dict(dict_in, indent=4, indent_all=False, max_length=128):
+    leading = " " * indent
+    formatted = ""
+    for k, v in dict_in.items():
+        sv = str(v)
+        if v is None or len(sv) == 0:
+            continue
+        elif torch.is_tensor(v):
+            formatted += f"\n{leading}{k}: <tensor>"
+        else:
+            if sv.startswith("{") and sv.endswith("}"):
+                try:
+                    sv = format_json(
+                        v,
+                        indent=indent,
+                        indent_all=indent_all,
+                        max_length=max_length,
+                    )
+                    if sv == "null":
+                        continue
+                    formatted += f"\n{leading}{k}: {sv}"
+                except Exception:
+                    formatted += f"\n{leading}{k}: <unknown object>"
+            else:
+                if len(sv) < max_length:
+                    formatted += f"\n{leading}{k}: {sv}"
+                else:
+                    formatted += f"\n{leading}{k}: <truncated string>"
+    return formatted
+
+
+def json_path_to_dict(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
