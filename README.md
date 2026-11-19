@@ -1,12 +1,12 @@
-# multigpu_diffusion
+# multigpu_diffusers
 
-Python Flask hosts for multi-GPU Diffusion inferencing solutions.
+Python Flask hosts for multi-GPU Diffusers inferencing solutions.
 (Uses HuggingFace Diffusers library.)
 
 
 ## Notes:
-- Windows and macOS are not (and probably never will be) supported.
-- This repo mainly exists for [multigpu_diffusion_comfyui](https://github.com/SlackinJack/multigpu_diffusion_comfyui), which provides ComfyUI nodes to run everything here.
+- Linux support only - Windows and macOS are not (and probably never will be) supported.
+- This repo mainly exists for [multigpu_diffusers_comfyui](https://github.com/SlackinJack/multigpu_diffusers_comfyui), which provides ComfyUI nodes to run everything here.
 
 
 ## Supported Model Types:

@@ -380,7 +380,7 @@ class CommonHost:
 
     def print_params(self, data):
         if self.log_level >= 2:
-            formatted = "📋 Received parameters:" + format_json(
+            formatted = "📋 Received parameters: " + format_json(
                 data, indent=8, indent_all=True
             )
             self.log(2, formatted)
@@ -482,22 +482,21 @@ class CommonHost:
                     self.is_transformer_model_type is False
                 )
                 self.pipeline_name = self.loaded_model_index["_class_name"]
-                self.log(0, f"ℹ️ Loading pipeline {self.pipeline_name}")
                 if data["checkpoint"].get("class_override") is not None:
                     pipeline_class_name = data["checkpoint"]["class_override"]
                 else:
                     pipeline_class_name = self.pipeline_name
+                self.log(0, f"ℹ️ Loading pipeline {pipeline_class_name}")
                 pipeline_class = getattr(diffusers, pipeline_class_name)
                 self.is_image_model = (
                     "video" not in pipeline_class_name.lower()
+                    and "wan" not in pipeline_class_name.lower()
                 )  # TODO: improve this
                 self.backend_name = backend_name
 
                 # torch tweaks
                 if data["torch"] is not None:
-                    cache_size_limit = data["torch"].get(
-                        "torch_cache_limit"
-                    )
+                    cache_size_limit = data["torch"].get("torch_cache_limit")
                     accumulated_cache_size_limit = data["torch"].get(
                         "torch_accumlated_cache_limit"
                     )
@@ -680,18 +679,14 @@ class CommonHost:
                 if data["group_offload"] is None:
                     pass
                 else:
-                    transformer_offload_config = data[
-                        "group_offload"
-                    ].get("transformer")
+                    transformer_offload_config = data["group_offload"].get(
+                        "transformer"
+                    )
                     encoder_offload_config = data["group_offload"].get(
                         "encoder"
                     )
-                    vae_offload_config = data["group_offload"].get(
-                        "vae"
-                    )
-                    misc_offload_config = data["group_offload"].get(
-                        "misc"
-                    )
+                    vae_offload_config = data["group_offload"].get("vae")
+                    misc_offload_config = data["group_offload"].get("misc")
                     onload_device = "cuda"
                     kwargs = {
                         "onload_device": torch.device(onload_device),
@@ -893,16 +888,10 @@ class CommonHost:
                         "compile_transformer"
                     )
                     compile_vae = data["compile"].get("compile_vae")
-                    compile_encoder = data["compile"].get(
-                        "compile_encoder"
-                    )
-                    compile_backend = data["compile"].get(
-                        "compile_backend"
-                    )
+                    compile_encoder = data["compile"].get("compile_encoder")
+                    compile_backend = data["compile"].get("compile_backend")
                     compile_mode = data["compile"].get("compile_mode")
-                    compile_options = data["compile"].get(
-                        "compile_options"
-                    )
+                    compile_options = data["compile"].get("compile_options")
                     dynamic = data["compile"].get("dynamic")
                     fullgraph = data["compile"].get("fullgraph")
 
@@ -1038,15 +1027,13 @@ class CommonHost:
                 model_class = getattr(diffusers, arch)
                 self.log(
                     0,
-                    f"""ℹ️ Using {arch} to load this model
-            with args: {formatted}""",
+                    f"ℹ️ Using {arch} to load this model, with args: {formatted}",
                 )
             except Exception:
                 model_class = AutoModelD
                 self.log(
                     0,
-                    f"""ℹ️ Using AutoModel (Diffusers) to load this model
-            with args: {formatted}""",
+                    f"ℹ️ Using AutoModel (Diffusers) to load this model, with args: {formatted}",
                 )
 
         if is_checkpoint:
@@ -1129,15 +1116,13 @@ class CommonHost:
                 model_class = getattr(transformers, arch)
                 self.log(
                     0,
-                    f"""ℹ️ Using {arch} to load this model
-            with args: {formatted}""",
+                    f"ℹ️ Using {arch} to load this model, with args: {formatted}",
                 )
             except Exception:
                 model_class = AutoModelT
                 self.log(
                     0,
-                    f"""ℹ️ Using AutoModel (Transformers) to load this model
-            with config {formatted}""",
+                    f"ℹ️ Using AutoModel (Transformers) to load this model, with config {formatted}",
                 )
             return model_class.from_pretrained(model_path, **kwargs)
 

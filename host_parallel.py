@@ -301,6 +301,7 @@ def __apply_pipeline_parallel(data):
             tp_config = diffusers.TensorParallelConfig(
                 tp_degree=tp_degree, mesh=tp_mesh
             )
+
             if (
                 base.adapter_names is not None
                 and base.loras_are_fused is False

@@ -1,7 +1,7 @@
-# Some *experimental* and *vibe-coded* plans
+# These are vibe-coded plans
 # These are here because Diffusers doesn't support plans for every transformer
-# They're only applied if one isn't found in the transformer itself
-# better than nothing
+# Do not expect speed gains or memory reductions
+# These are just for experimentation and may be removed at any time
 
 
 CUSTOM_CP_PLANS = {}
@@ -40,3 +40,10 @@ CUSTOM_TP_PLANS["ZImagePipeline"] = {
     "layers.*.feed_forward.w3": "colwise",
     "layers.*.feed_forward.w2": "rowwise",
 }
+
+
+CUSTOM_TP_PLANS["WanPipeline"] = {
+    "blocks.*.ffn.net.0.proj": "colwise",
+    "blocks.*.ffn.net.2": "rowwise",
+}
+CUSTOM_TP_PLANS["WanImageToVideoPipeline"] = CUSTOM_TP_PLANS["WanPipeline"]
