@@ -169,28 +169,28 @@ def convert_tensor_to_b64(tensor):
 
 
 def format_json(str_or_dict_in, indent=4, indent_all=False, max_length=128):
-    def to_json(obj):
-        return {type(obj).__name__: vars(obj)}
-
     if isinstance(str_or_dict_in, dict):
+        def to_json(obj):
+            return {type(obj).__name__: vars(obj)}
         str_or_dict_in = json.dumps(str_or_dict_in, default=to_json)
     d = json.loads(str_or_dict_in)
 
-    def check_and_rewrite(d):
+    def check_and_rewrite(d4, max_len):
         out = {}
-        for k, v in d.items():
+        for k, v in d4.items():
             if isinstance(v, dict):
-                d[k] = check_and_rewrite(v)
+                out[k] = check_and_rewrite(v, max_len-8)
             else:
-                if v is None or v == "null":
+                sv = str(v)
+                if v is None or len(sv) == 0 or v == "null":
                     continue
-                elif len(str(v)) > max_length:
+                elif len(sv) > max_len:
                     out[k] = True
                 else:
                     out[k] = v
         return out
 
-    d2 = check_and_rewrite(d)
+    d2 = check_and_rewrite(d, max_length)
     d = json.dumps(d2, indent=indent)
     if indent_all is True:
         d2 = d.split("\n")
@@ -219,18 +219,18 @@ def format_dict(dict_in, indent=4, indent_all=False, max_length=128):
                         v,
                         indent=indent,
                         indent_all=indent_all,
-                        max_length=max_length,
+                        max_length=max_length-8,
                     )
                     if sv == "null":
                         continue
                     formatted += f"\n{leading}{k}: {sv}"
                 except Exception:
-                    formatted += f"\n{leading}{k}: <unknown object>"
+                    formatted += f"\n{leading}{k}: <dict>"
             else:
                 if len(sv) < max_length:
                     formatted += f"\n{leading}{k}: {sv}"
                 else:
-                    formatted += f"\n{leading}{k}: <truncated string>"
+                    formatted += f"\n{leading}{k}: <truncated>"
     return formatted
 
 

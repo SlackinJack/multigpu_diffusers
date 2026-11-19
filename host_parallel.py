@@ -42,9 +42,7 @@ def __initialize_distributed_environment():
     mp.set_start_method("spawn", force=True)
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     torch.cuda.set_device(local_rank)
-    dist.init_process_group(
-        "nccl", device_id=local_rank, timeout=timedelta(days=1)
-    )
+    dist.init_process_group("nccl", device_id=local_rank, timeout=timedelta(days=1))
     base.local_rank = local_rank
     base.set_logger()
     base.initialized = True
@@ -62,32 +60,19 @@ def __run_host():
     torch._logging.set_logs(all=logging.CRITICAL)
     if base.local_rank == 0:
         base.log(1, "ℹ️ Starting Flask host on rank 0")
-        app.run(
-            host="localhost", port=args.port, debug=False, use_reloader=False
-        )
+        app.run(host="localhost", port=args.port, debug=False, use_reloader=False)
     else:
         while True:
             base.log(0, "⏳ Waiting for tasks", rank_0_only=False)
             params = [{"stop": True}]
             dist.broadcast_object_list(params, src=0)
             if params[0].get("stop") is not None:
-                base.log(
-                    0,
-                    "🛑 Received exit signal - shutting down",
-                    rank_0_only=False,
-                )
+                base.log(0, "🛑 Received exit signal - shutting down", rank_0_only=False)
                 __close_host()
                 return
-            elif (
-                params[0].get("sleep") is not None
-                and params[0].get("time") is not None
-            ):
+            elif params[0].get("sleep") is not None and params[0].get("time") is not None:
                 t = params[0].get("time")
-                base.log(
-                    0,
-                    f"💤 Received sleep signal - pausing for {t} seconds",
-                    rank_0_only=False,
-                )
+                base.log(0, f"💤 Received sleep signal - pausing for {t} seconds", rank_0_only=False)
                 time.sleep(int(t))
                 base.log(0, "⏰ Sleep finished", rank_0_only=False)
             else:
@@ -117,9 +102,7 @@ def handle_path(path):
         case "sleep":
             return __handle_sleep(request.json)
         case "close":
-            base.log(
-                0, "🛑 Received exit signal - shutting down", rank_0_only=False
-            )
+            base.log(0, "🛑 Received exit signal - shutting down", rank_0_only=False)
             dist.broadcast_object_list([{"stop": True}], src=0)
             __close_host()
             # raise HostShutdown
@@ -430,20 +413,21 @@ def __generate_image_parallel(data):
                     output_images = output.images
                     output_images = base.get_output_images(output_images, data)
                     images = base.convert_latent_to_image(output_images)
-                    latents = base.convert_latent_to_output_latent(
-                        output_images
-                    )
+                    latents = base.convert_latent_to_output_latent(output_images)
+                    images = pickle_and_encode_b64(images[0])
+                    latents = pickle_and_encode_b64(latents)
                     return {
                         "message": "OK",
-                        "output": pickle_and_encode_b64(images[0]),
-                        "latent": pickle_and_encode_b64(latents),
+                        "output": images,
+                        "latent": latents,
                         "is_image": True,
                     }
             else:
                 output = output.frames[0]
+            output = pickle_and_encode_b64(output)
             return {
                 "message": "OK",
-                "output": pickle_and_encode_b64(output),
+                "output": output,
                 "is_image": False,
             }
         else:
