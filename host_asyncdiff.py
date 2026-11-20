@@ -32,7 +32,7 @@ cli.show_server_banner = lambda *_: None
 app = Flask(__name__)
 base = None
 asyncdiff = None
-asyncdiff_config = None
+backend_config = None
 
 
 def __initialize_distributed_environment():
@@ -110,8 +110,8 @@ def handle_path(path):
 
 
 def __close_host():
-    global asyncdiff, asyncdiff_config, dist
-    asyncdiff = asyncdiff_config = None
+    global asyncdiff, backend_config, dist
+    asyncdiff = backend_config = None
     base.close_pipeline()
     dist.barrier()
     dist.destroy_process_group()
@@ -184,26 +184,17 @@ def __move_pipe(device):
         return "ℹ️ Pipeline does not need to be moved", 200
 
     flag_vae_sliced = False
-    if (
-        base.applied.get("enable_vae_slicing") is not None
-        and base.applied.get("enable_vae_slicing") is True
-    ):
+    if base.applied.get("enable_vae_slicing") is not None and base.applied.get("enable_vae_slicing") is True:
         flag_vae_sliced = True
         base.pipe.disable_vae_slicing()
 
     flag_vae_tiled = False
-    if (
-        base.applied.get("enable_vae_tiling") is not None
-        and base.applied.get("enable_vae_tiling") is True
-    ):
+    if base.applied.get("enable_vae_tiling") is not None and base.applied.get("enable_vae_tiling") is True:
         flag_vae_tiled = True
         base.pipe.disable_vae_tiling()
 
     flag_attention_sliced = False
-    if (
-        base.applied.get("enable_attention_slicing") is not None
-        and base.applied.get("enable_attention_slicing") is True
-    ):
+    if base.applied.get("enable_attention_slicing") is not None and base.applied.get("enable_attention_slicing") is True:
         flag_attention_sliced = True
         base.pipe.disable_attention_slicing()
 
@@ -242,7 +233,7 @@ def __move_pipe(device):
 
 
 def __apply_pipeline_parallel(data):
-    global asyncdiff, asyncdiff_config
+    global asyncdiff, backend_config
     # Params:
     # model_n
     # stride
@@ -250,14 +241,12 @@ def __apply_pipeline_parallel(data):
     # time_shift
     # shifted_steps
     # ramped_time_shift
+    backend_config = data.get("backend")
+    assert backend_config is not None, "Backend configuration must be provided"
+
     with torch.no_grad():
         result = base.setup_pipeline(data, backend_name="asyncdiff")
         if result[1] == 200:
-            ad_config = data.get("backend")
-            assert ad_config is not None, (
-                "AsyncDiff configuration must be provided"
-            )
-            asyncdiff_config = ad_config
             if base.pipeline_name in ["FluxPipeline"]:
                 ad_class = AsyncDiffFlux1
             elif base.pipeline_name in ["Flux2Pipeline", "Flux2KleinPipeline"]:
@@ -268,10 +257,7 @@ def __apply_pipeline_parallel(data):
                 ad_class = AsyncDiffQwen21
             elif base.pipeline_name in ["StableDiffusion3Pipeline"]:
                 ad_class = AsyncDiffStableDiffusion3
-            elif base.pipeline_name in [
-                "WanPipeline",
-                "WanImageToVideoPipeline",
-            ]:
+            elif base.pipeline_name in ["WanPipeline", "WanImageToVideoPipeline"]:
                 ad_class = AsyncDiffWan
             elif base.pipeline_name in ["ZImagePipeline"]:
                 ad_class = AsyncDiffZImage
@@ -280,20 +266,20 @@ def __apply_pipeline_parallel(data):
             base.log(
                 1,
                 f"""ℹ️ Initializing AsyncDiff:
-        model_n: {asyncdiff_config.get("model_n")}
-        stride: {asyncdiff_config.get("stride")}
-        synced_steps: {asyncdiff_config.get("synced_steps")}
-        time_shift: {asyncdiff_config.get("time_shift")}
-        shifted_steps: {asyncdiff_config.get("shifted_steps")}
-        ramped_time_shift: {asyncdiff_config.get("ramped_time_shift")}""",
+        model_n: {backend_config.get("model_n")}
+        stride: {backend_config.get("stride")}
+        synced_steps: {backend_config.get("synced_steps")}
+        time_shift: {backend_config.get("time_shift")}
+        shifted_steps: {backend_config.get("shifted_steps")}
+        ramped_time_shift: {backend_config.get("ramped_time_shift")}""",
             )
             asyncdiff = ad_class(
                 base.pipe,
                 base.pipeline_name,
-                model_n=asyncdiff_config.get("model_n"),
-                stride=asyncdiff_config.get("stride"),
-                time_shift=asyncdiff_config.get("time_shift"),
-                shifted_steps=asyncdiff_config.get("shifted_steps"),
+                model_n=backend_config.get("model_n"),
+                stride=backend_config.get("stride"),
+                time_shift=backend_config.get("time_shift"),
+                shifted_steps=backend_config.get("shifted_steps"),
             )
         return result
 
@@ -304,7 +290,7 @@ def __generate_image_parallel(data):
     with torch.inference_mode():
         __move_pipe(f"cuda:{base.local_rank}")
         torch.cuda.reset_peak_memory_stats()
-        warmup_steps = asyncdiff_config.get("synced_steps")
+        warmup_steps = backend_config.get("synced_steps")
         # asyncdiff.reset_state(warm_up=warmup_steps)
 
         def complete(data, index, timestep, callback_kwargs):

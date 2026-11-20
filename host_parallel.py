@@ -33,7 +33,7 @@ logging.getLogger("flask").disabled = True
 cli.show_server_banner = lambda *_: None
 app = Flask(__name__)
 base = None
-parallel_config = None
+backend_config = None
 
 
 def __initialize_distributed_environment():
@@ -112,8 +112,8 @@ def handle_path(path):
 
 
 def __close_host():
-    global parallel_config, dist
-    parallel_config = None
+    global backend_config, dist
+    backend_config = None
     base.close_pipeline()
     dist.barrier()
     dist.destroy_process_group()
@@ -149,62 +149,40 @@ def __handle_sleep(data):
 
 
 def __apply_pipeline_parallel(data):
-    global parallel_config, enable_cache_dit_runonce
+    global backend_config, enable_cache_dit_runonce
     # Params:
     # deep_cache
     # deep_cache_interval
     # deep_cache_id
     # cache_dit
-    config = data.get("backend")
-    assert config is not None, "Configuration must be provided"
+    backend_config = data.get("backend")
+    assert backend_config is not None, "Backend configuration must be provided"
 
     with torch.no_grad():
         # tensor parallel
-        tensor_parallel = config.get("tensor_parallel") not in [None, False]
-        tp_degree = config.get("tp_degree")
+        tensor_parallel = backend_config.get("tensor_parallel") not in [None, False]
+        tp_degree = backend_config.get("tp_degree")
 
         # context parallel
-        context_parallel = config.get("context_parallel") not in [None, False]
-        ulysses_degree = config.get("ulysses_degree")
-        ring_degree = config.get("ring_degree")
-        ulysses_anything = config.get("ulysses_anything") not in [None, False]
-        ring_anything = config.get("ring_anything") not in [None, False]
+        context_parallel = backend_config.get("context_parallel") not in [None, False]
+        ulysses_degree = backend_config.get("ulysses_degree")
+        ring_degree = backend_config.get("ring_degree")
+        ulysses_anything = backend_config.get("ulysses_anything") not in [None, False]
+        ring_anything = backend_config.get("ring_anything") not in [None, False]
 
         requested_world_size = tp_degree * ulysses_degree * ring_degree
-        assert requested_world_size == dist.get_world_size(), (
-            "(tp * ulysses * ring) needs to be equal to world size"
-        )
-        mesh = init_device_mesh(
-            "cuda",
-            (tp_degree, ring_degree, ulysses_degree),
-            mesh_dim_names=("tp", "ring", "ulysses"),
-        )
+        assert requested_world_size == dist.get_world_size(), "(tp * ulysses * ring) needs to be equal to world size"
+        mesh = init_device_mesh("cuda", (tp_degree, ring_degree, ulysses_degree), mesh_dim_names=("tp", "ring", "ulysses"))
         tp_mesh, cp_mesh = mesh["tp"], mesh["ring", "ulysses"]
-        base.log(
-            0,
-            f"ℹ️ Device mesh created with size {dist.get_world_size()} (T:{tp_degree}|U:{ulysses_degree}|R:{ring_degree})",
-        )
+        base.log(0, f"ℹ️ Device mesh created with size {dist.get_world_size()} (T:{tp_degree}|U:{ulysses_degree}|R:{ring_degree})")
 
         def move_pipe_components():
             components_to_move = [k for k, v in base.pipe.components.items()]
-            components_to_move = [
-                k
-                for k in components_to_move
-                if k not in base.offloaded_modules
-            ]
-            component_names_to_check = (
-                Common.ENCODER_MODULE_NAMES
-                + Common.VAE_MODULE_NAMES
-                + Common.MISC_MODULE_NAMES
-            )
+            components_to_move = [k for k in components_to_move if k not in base.offloaded_modules]
+            component_names_to_check = (Common.ENCODER_MODULE_NAMES + Common.VAE_MODULE_NAMES + Common.MISC_MODULE_NAMES)
             for k in component_names_to_check:
-                if (
-                    data.get(k) is not None
-                    and data[k].get("device_map") is not None
-                ):
-                    components_to_move = [
-                        k2 for k2 in components_to_move if k2 != k
-                    ]
+                if data.get(k) is not None and data[k].get("device_map") is not None:
+                    components_to_move = [k2 for k2 in components_to_move if k2 != k]
 
             for k in components_to_move:
                 try:
@@ -224,24 +202,12 @@ def __apply_pipeline_parallel(data):
 
             # setup pipe
             result = base.setup_pipeline(data, backend_name="parallel")
-            target = (
-                base.pipe.transformer
-                if base.is_transformer_model_type
-                else base.pipe.unet
-            )
+            target = base.pipe.transformer if base.is_transformer_model_type else base.pipe.unet
 
             # apply tpconfig to transformer
-            tp_config = diffusers.TensorParallelConfig(
-                tp_degree=tp_degree, mesh=tp_mesh
-            )
-            if (
-                base.adapter_names is not None
-                and base.loras_are_fused is False
-            ):
-                base.log(
-                    0,
-                    "⏳ Reloading transformer as LoRAs are loaded on a tensor parallel configuration",
-                )
+            tp_config = diffusers.TensorParallelConfig(tp_degree=tp_degree, mesh=tp_mesh)
+            if base.adapter_names is not None and base.loras_are_fused is False:
+                base.log(0, "⏳ Reloading transformer as LoRAs are loaded on a tensor parallel configuration")
                 base.fuse_pipeline_loras()
             target.enable_parallelism(config=tp_config)
 
@@ -256,16 +222,9 @@ def __apply_pipeline_parallel(data):
                 ring_anything=ring_anything,
                 mesh=cp_mesh,
             )
-            cp_config.setup(
-                base.local_rank,
-                dist.get_world_size(),
-                torch.device(f"cuda:{base.local_rank}"),
-                mesh=cp_mesh,
-            )
+            cp_config.setup(base.local_rank, dist.get_world_size(), torch.device(f"cuda:{base.local_rank}"), mesh=cp_mesh)
             cp_plan = getattr(target, "_cp_plan", None)
-            assert cp_plan is not None, (
-                "No context parallel plan found in transformer"
-            )
+            assert cp_plan is not None, "No context parallel plan found in transformer"
 
             # apply cpconfig to transformer
             diffusers.hooks.apply_context_parallel(target, cp_config, cp_plan)
@@ -274,31 +233,17 @@ def __apply_pipeline_parallel(data):
 
             # setup pipe
             result = base.setup_pipeline(data, backend_name="parallel")
-            target = (
-                base.pipe.transformer
-                if base.is_transformer_model_type
-                else base.pipe.unet
-            )
+            target = base.pipe.transformer if base.is_transformer_model_type else base.pipe.unet
 
             # apply tpconfig to transformer
-            tp_config = diffusers.TensorParallelConfig(
-                tp_degree=tp_degree, mesh=tp_mesh
-            )
+            tp_config = diffusers.TensorParallelConfig(tp_degree=tp_degree, mesh=tp_mesh)
 
-            if (
-                base.adapter_names is not None
-                and base.loras_are_fused is False
-            ):
-                base.log(
-                    0,
-                    "⏳ Reloading transformer as LoRAs are loaded on a tensor parallel configuration",
-                )
+            if base.adapter_names is not None and base.loras_are_fused is False:
+                base.log(0, "⏳ Reloading transformer as LoRAs are loaded on a tensor parallel configuration")
                 base.fuse_pipeline_loras()
             if getattr(target, "_tp_plan", None) is None:
                 custom_tp_plan = get_custom_tp_plans(base.pipeline_name)
-                assert custom_tp_plan is not None, (
-                    "No tp_plan found in the transformer, and no custom plans are available"
-                )
+                assert custom_tp_plan is not None, "No tp_plan found in the transformer, and no custom plans are available"
                 setattr(target, "_tp_plan", custom_tp_plan)
             target.enable_parallelism(config=tp_config)
 
@@ -309,11 +254,7 @@ def __apply_pipeline_parallel(data):
 
             # setup pipe
             result = base.setup_pipeline(data, backend_name="parallel")
-            target = (
-                base.pipe.transformer
-                if base.is_transformer_model_type
-                else base.pipe.unet
-            )
+            target = base.pipe.transformer if base.is_transformer_model_type else base.pipe.unet
 
             # dynamically move pipe components
             move_pipe_components()
@@ -327,14 +268,11 @@ def __apply_pipeline_parallel(data):
                 mesh=cp_mesh,
             )
             cp_plan = getattr(target, "_cp_plan", None)
-            assert cp_plan is not None, (
-                "No context parallel plan found in transformer"
-            )
+            assert cp_plan is not None, "No context parallel plan found in transformer"
             target.enable_parallelism(config=cp_config, cp_plan=cp_plan)
 
         dist.barrier()
         if result[1] == 200:
-            parallel_config = config
             enable_cache_dit_runonce = False
         return result
 
@@ -352,20 +290,14 @@ def __generate_image_parallel(data):
             kwargs = base.setup_inference(data)
 
             # caching
-            enable_deepcache = (
-                base.can_use_deepcache is True
-                and parallel_config.get("deepcache_config") is not None
-            )
-            enable_cache_dit = (
-                base.can_use_cachedit is True
-                and parallel_config.get("cache_dit_config") is not None
-            )
+            enable_deepcache = base.can_use_deepcache is True and backend_config.get("deepcache_config") is not None
+            enable_cache_dit = base.can_use_cachedit is True and backend_config.get("cache_dit_config") is not None
             deepcache_config = None
             cache_dit_config = None
             if enable_deepcache:
-                deepcache_config = parallel_config.get("deepcache_config")
+                deepcache_config = backend_config.get("deepcache_config")
             if enable_cache_dit:
-                cache_dit_config = parallel_config.get("cache_dit_config")
+                cache_dit_config = backend_config.get("cache_dit_config")
 
             # inference
             if enable_deepcache:
@@ -377,22 +309,13 @@ def __generate_image_parallel(data):
             if enable_cache_dit:
                 cd_config = get_cache_dit_config(cache_dit_config)
                 if not enable_cache_dit_runonce:
-                    cache_dit.enable_cache(
-                        base.pipe,
-                        num_inference_steps=kwargs["num_inference_steps"],
-                        verbose=False,
-                        **cd_config,
-                    )
+                    cache_dit.enable_cache(base.pipe, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
                     enable_cache_dit_runonce = True
                     base.log(0, "ℹ️ CacheDiT enabled", rank_0_only=False)
                 else:
                     base.log(0, "ℹ️ Using CacheDiT", rank_0_only=False)
-                cache_dit.refresh_context(
-                    base.pipe.transformer,
-                    num_inference_steps=kwargs["num_inference_steps"],
-                    verbose=False,
-                    **cd_config,
-                )
+                cache_dit.refresh_context(base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
+
             start_time = time.perf_counter()
             output = base.pipe(**kwargs)
             end_time = time.perf_counter()

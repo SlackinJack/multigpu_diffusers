@@ -26,7 +26,7 @@ logging.getLogger("flask").disabled = True
 cli.show_server_banner = lambda *_: None
 app = Flask(__name__)
 base = None
-single_config = None
+backend_config = None
 enable_cache_dit_runonce = False
 
 
@@ -75,9 +75,7 @@ def handle_path(path):
         case "sleep":
             return "Operation not supported by this host", 500
         case "close":
-            base.log(
-                0, "🛑 Received exit signal - shutting down", rank_0_only=False
-            )
+            base.log(0, "🛑 Received exit signal - shutting down", rank_0_only=False)
             base.close_pipeline()
             base = None
             os.kill(os.getpid(), signal.SIGTERM)
@@ -119,26 +117,17 @@ def __move_pipe(device):
         return "ℹ️ Pipeline does not need to be moved", 200
 
     flag_vae_sliced = False
-    if (
-        base.applied.get("enable_vae_slicing") is not None
-        and base.applied.get("enable_vae_slicing") is True
-    ):
+    if base.applied.get("enable_vae_slicing") is not None and base.applied.get("enable_vae_slicing") is True:
         flag_vae_sliced = True
         base.pipe.disable_vae_slicing()
 
     flag_vae_tiled = False
-    if (
-        base.applied.get("enable_vae_tiling") is not None
-        and base.applied.get("enable_vae_tiling") is True
-    ):
+    if base.applied.get("enable_vae_tiling") is not None and base.applied.get("enable_vae_tiling") is True:
         flag_vae_tiled = True
         base.pipe.disable_vae_tiling()
 
     flag_attention_sliced = False
-    if (
-        base.applied.get("enable_attention_slicing") is not None
-        and base.applied.get("enable_attention_slicing") is True
-    ):
+    if base.applied.get("enable_attention_slicing") is not None and base.applied.get("enable_attention_slicing") is True:
         flag_attention_sliced = True
         base.pipe.disable_attention_slicing()
 
@@ -176,21 +165,20 @@ def __move_pipe(device):
 
 
 def __apply_pipeline_parallel(data):
-    global single_config, enable_cache_dit_runonce
+    global backend_config, enable_cache_dit_runonce
     # Params:
     # deep_cache
     # deep_cache_interval
     # deep_cache_id
     # cache_dit
-    config = data.get("backend")
-    assert config is not None, "Configuration must be provided"
+    backend_config = data.get("backend")
+    assert backend_config is not None, "Backend configuration must be provided"
     with torch.no_grad():
         result = base.setup_pipeline(data, backend_name="single")
         if result[1] == 200:
             if len(base.device_map_modules) == 0:
                 base.pipe = base.pipe.to("cuda")
             enable_cache_dit_runonce = False
-            single_config = config
         return result
 
 
@@ -199,10 +187,7 @@ def __generate_image_parallel(data):
     data = base.prepare_inputs(data)
 
     with torch.inference_mode():
-        if (
-            len(base.offloaded_modules) == 0
-            and len(base.device_map_modules) == 0
-        ):
+        if len(base.offloaded_modules) == 0 and len(base.device_map_modules) == 0:
             __move_pipe("cuda")
         torch.cuda.reset_peak_memory_stats()
 
@@ -210,20 +195,14 @@ def __generate_image_parallel(data):
         kwargs = base.setup_inference(data)
 
         # caching
-        enable_deepcache = (
-            base.can_use_deepcache is True
-            and single_config.get("deepcache_config") is not None
-        )
-        enable_cache_dit = (
-            base.can_use_cachedit is True
-            and single_config.get("cache_dit_config") is not None
-        )
+        enable_deepcache = base.can_use_deepcache is True and backend_config.get("deepcache_config") is not None
+        enable_cache_dit = base.can_use_cachedit is True and backend_config.get("cache_dit_config") is not None
         deepcache_config = None
         cache_dit_config = None
         if enable_deepcache:
-            deepcache_config = single_config.get("deepcache_config")
+            deepcache_config = backend_config.get("deepcache_config")
         if enable_cache_dit:
-            cache_dit_config = single_config.get("cache_dit_config")
+            cache_dit_config = backend_config.get("cache_dit_config")
 
         # inference
         if enable_deepcache:
@@ -235,22 +214,13 @@ def __generate_image_parallel(data):
         if enable_cache_dit:
             cd_config = get_cache_dit_config(cache_dit_config)
             if not enable_cache_dit_runonce:
-                cache_dit.enable_cache(
-                    base.pipe,
-                    num_inference_steps=kwargs["num_inference_steps"],
-                    verbose=False,
-                    **cd_config,
-                )
+                cache_dit.enable_cache(base.pipe, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
                 enable_cache_dit_runonce = True
                 base.log(0, "ℹ️ CacheDiT enabled", rank_0_only=False)
             else:
                 base.log(0, "ℹ️ Using CacheDiT", rank_0_only=False)
-            cache_dit.refresh_context(
-                base.pipe.transformer,
-                num_inference_steps=kwargs["num_inference_steps"],
-                verbose=False,
-                **cd_config,
-            )
+            cache_dit.refresh_context(base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
+
         start_time = time.perf_counter()
         output = base.pipe(**kwargs)
         end_time = time.perf_counter()

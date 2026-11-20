@@ -168,18 +168,21 @@ def convert_tensor_to_b64(tensor):
     return b64_image
 
 
-def format_json(str_or_dict_in, indent=4, indent_all=False, max_length=128):
+def format_json(str_or_dict_in, indent=4, indent_all=False, max_length=128, max_dict_items=16):
     if isinstance(str_or_dict_in, dict):
         def to_json(obj):
             return {type(obj).__name__: vars(obj)}
         str_or_dict_in = json.dumps(str_or_dict_in, default=to_json)
     d = json.loads(str_or_dict_in)
 
-    def check_and_rewrite(d4, max_len):
+    def check_and_rewrite(d4, max_len, max_dict_items):
         out = {}
         for k, v in d4.items():
             if isinstance(v, dict):
-                out[k] = check_and_rewrite(v, max_len-8)
+                if len(v.keys()) > max_dict_items:
+                    out[k] = "<truncated dict>"
+                else:
+                    out[k] = check_and_rewrite(v, max_len-8)
             else:
                 sv = str(v)
                 if v is None or len(sv) == 0 or v == "null":
@@ -190,7 +193,7 @@ def format_json(str_or_dict_in, indent=4, indent_all=False, max_length=128):
                     out[k] = v
         return out
 
-    d2 = check_and_rewrite(d, max_length)
+    d2 = check_and_rewrite(d, max_length, max_dict_items)
     d = json.dumps(d2, indent=indent)
     if indent_all is True:
         d2 = d.split("\n")
@@ -203,7 +206,7 @@ def format_json(str_or_dict_in, indent=4, indent_all=False, max_length=128):
     return d
 
 
-def format_dict(dict_in, indent=4, indent_all=False, max_length=128):
+def format_dict(dict_in, indent=4, indent_all=False, max_length=128, max_dict_items=8):
     leading = " " * indent
     formatted = ""
     for k, v in dict_in.items():
@@ -211,7 +214,7 @@ def format_dict(dict_in, indent=4, indent_all=False, max_length=128):
         if v is None or len(sv) == 0:
             continue
         elif torch.is_tensor(v):
-            formatted += f"\n{leading}{k}: <tensor>"
+            formatted += f"\n{leading}{k}: <truncated tensor>"
         else:
             if sv.startswith("{") and sv.endswith("}"):
                 try:
@@ -220,17 +223,23 @@ def format_dict(dict_in, indent=4, indent_all=False, max_length=128):
                         indent=indent,
                         indent_all=indent_all,
                         max_length=max_length-8,
+                        max_dict_items=max_dict_items,
                     )
                     if sv == "null":
                         continue
                     formatted += f"\n{leading}{k}: {sv}"
                 except Exception:
-                    formatted += f"\n{leading}{k}: <dict>"
+                    formatted += f"\n{leading}{k}: <truncated dict>"
             else:
                 if len(sv) < max_length:
                     formatted += f"\n{leading}{k}: {sv}"
                 else:
-                    formatted += f"\n{leading}{k}: <truncated>"
+                    suffix = ""
+                    if isinstance(v, str):
+                        suffix = "string>"
+                    else:
+                        suffix = "unknown>"
+                    formatted += f"\n{leading}{k}: <truncated {suffix}"
     return formatted
 
 

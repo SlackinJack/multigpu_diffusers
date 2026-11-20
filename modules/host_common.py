@@ -43,6 +43,8 @@ from safetensors.torch import load_file
 from sdnq import SDNQConfig
 import cache_dit
 from cache_dit import DBCacheConfig, TaylorSeerCalibratorConfig
+
+
 from compel import Compel, ReturnedEmbeddingsType
 
 COMPEL_SUPPORTED_MODELS = ["sd1", "sd2", "sdxl"]
@@ -66,25 +68,13 @@ NON_DETERMINISTIC_PIPELINES = ["ZImagePipeline"]
 # non-comprehensive
 # these pipelines will only output to PIL instead of a latent:
 # TODO: to be fair, i could just torch.stack the latents
-PIL_OUTPUT_PIPELINES = [
-    "StableDiffusionUpscalePipeline",
-    "WanPipeline",
-    "WanImageToVideoPipeline",
-]
+PIL_OUTPUT_PIPELINES = ["StableDiffusionUpscalePipeline", "WanPipeline", "WanImageToVideoPipeline"]
 
+KNOWN_VIDEO_PIPELINE_NAMES_PARTIAL = ["video", "wan"]
 
 TRANSFORMER_MODULE_NAMES = ["transformer", "transformer_2", "unet"]
-ENCODER_MODULE_NAMES = [
-    "text_encoder",
-    "text_encoder_2",
-    "text_encoder_3",
-    "image_encoder",
-]
-MISC_MODULE_NAMES = [
-    "controlnet",
-    "image_processor",
-    "feature_extractor",
-]
+ENCODER_MODULE_NAMES = ["text_encoder", "text_encoder_2", "text_encoder_3", "image_encoder"]
+MISC_MODULE_NAMES = ["controlnet", "image_processor", "feature_extractor"]
 VAE_MODULE_NAMES = ["vae"]
 TOKENIZER_MODULE_NAMES = ["tokenizer", "tokenizer_2"]
 
@@ -251,6 +241,11 @@ def get_deepcache_config(deepcache_config):
     return dc_config
 
 
+def get_is_pipeline_transformer_type(data):
+    index = json_path_to_dict(f"{data['checkpoint']['checkpoint_path']}/model_index.json")
+    return "transformer" in index
+
+
 class CommonHost:
     def __init__(self):
         self.local_rank = -1
@@ -387,14 +382,9 @@ class CommonHost:
 
         # models
         data["checkpoint"] = data.setdefault("checkpoint")
-        # data["transformer"] = data.setdefault("transformer")
-        # data["vae"] = data.setdefault("vae")
         data["vae_fp16"] = data.setdefault("vae_fp16")
-        # data["control_net"] = data.setdefault("control_net")
-        # data["text_encoder"] = data.setdefault("text_encoder")
-        # data["text_encoder_2"] = data.setdefault("text_encoder_2")
-        # data["text_encoder_3"] = data.setdefault("text_encoder_3")
         data["lora"] = data.setdefault("lora")
+        data["models"] = data.setdefault("models")
 
         # memory & optimizations
         data["enable_vae_slicing"] = data.setdefault("enable_vae_slicing")
@@ -452,9 +442,8 @@ class CommonHost:
                     pipeline_class_name = self.pipeline_name
                 self.log(0, f"ℹ️ Loading pipeline {pipeline_class_name}")
                 pipeline_class = getattr(diffusers, pipeline_class_name)
-                self.is_image_model = (
-                    "video" not in pipeline_class_name.lower() and "wan" not in pipeline_class_name.lower()
-                )  # TODO: improve this
+                # TODO: improve this
+                self.is_image_model = not any(name.lower() in pipeline_class_name.lower() for name in KNOWN_VIDEO_PIPELINE_NAMES_PARTIAL)
                 self.backend_name = backend_name
 
                 # torch tweaks
@@ -509,14 +498,21 @@ class CommonHost:
                     for k, v in data["models"].items():
                         if k in TRANSFORMER_MODULE_NAMES:
                             has_transformer_set = True
-                            transformer_kwargs = {}
-                            if self.backend_name in ["parallel"] and data.get("tp_config") is not None:
-                                transformer_kwargs = {"parallel_config": data["tp_config"]}
-                            kwargs["transformer" if self.is_transformer_model_type else "unet"] = self.load_model(v, model_args=transformer_kwargs)
-                        if k in ENCODER_MODULE_NAMES:
-                            kwargs[k] = self.load_encoder(v)
+                            if isinstance(v, torch.nn.Module):
+                                kwargs["transformer" if self.is_transformer_model_type else "unet"] = v
+                            else:
+                                transformer_kwargs = {}
+                                if self.backend_name in ["parallel"] and data.get("tp_config") is not None:
+                                    transformer_kwargs = {"parallel_config": data["tp_config"]}
+                                kwargs["transformer" if self.is_transformer_model_type else "unet"] = self.load_model(v, model_args=transformer_kwargs)
                         else:
-                            kwargs[k] = self.load_model(v, is_vae=k in VAE_MODULE_NAMES)
+                            if isinstance(v, torch.nn.Module):
+                                kwargs[k] = v
+                            else:
+                                if k in ENCODER_MODULE_NAMES:
+                                    kwargs[k] = self.load_encoder(v)
+                                else:
+                                    kwargs[k] = self.load_model(v, is_vae=k in VAE_MODULE_NAMES)
 
                 if has_transformer_set is False and self.backend_name in ["parallel"] and data.get("tp_config") is not None:
                     transformer_kwargs = {"parallel_config": data["tp_config"]}
@@ -527,7 +523,7 @@ class CommonHost:
                     )
 
                 clean()
-                self.progress = 10
+                self.progress = 20
 
                 # quantize
                 if data["quantize"] is not None:

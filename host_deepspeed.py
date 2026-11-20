@@ -37,7 +37,7 @@ logging.getLogger("flask").disabled = True
 cli.show_server_banner = lambda *_: None
 app = Flask(__name__)
 base = None
-deepspeed_config = None
+backend_config = None
 
 
 def __initialize_distributed_environment():
@@ -116,8 +116,8 @@ def handle_path(path):
 
 
 def __close_host():
-    global deepspeed_config, dist
-    deepspeed_config = None
+    global backend_config, dist
+    backend_config = None
     base.close_pipeline()
     dist.barrier()
     dist.destroy_process_group()
@@ -153,57 +153,80 @@ def __handle_sleep(data):
 
 
 def __apply_pipeline_parallel(data):
-    global deepspeed_config, enable_cache_dit_runonce
+    global backend_config, enable_cache_dit_runonce
     # Params:
     # deep_cache
     # deep_cache_interval
     # deep_cache_id
     # cache_dit
-    config = data.get("backend")
-    assert config is not None, "Configuration must be provided"
+    backend_config = data.get("backend")
+    assert backend_config is not None, "Backend configuration must be provided"
+
+    wrap_transformer = backend_config["wrap_transformer"]
+    wrap_encoder = backend_config["wrap_encoder"]
+    wrap_vae = backend_config["wrap_vae"]
+    wrap_misc = backend_config["wrap_misc"]
 
     # with torch.no_grad():
     result = base.setup_pipeline(data, backend_name="deepspeed")
     dist.barrier()
     if result[1] == 200:
         base.log(1, "ℹ️ Initializing DeepSpeed")
-        class DeepSpeedUNetProxy(torch.nn.Module):
-            def __init__(self, engine):
-                super().__init__()
-                self.engine = engine
-
-            def forward(self, *args, **kwargs):
-                return self.engine(*args, **kwargs)
-
-            def __getattr__(self, name):
-                try:
-                    return super().__getattr__(name)
-                except AttributeError:
-                    engine = super().__getattr__("engine")
-                    return getattr(engine.module, name)
 
         # TODO: user configuration
         ds_config = {
-            "train_micro_batch_size_per_gpu": 1,
-            "fp16": {"enabled": True},
-            "zero_optimization": {
-                "stage": 3,
-                "offload_param": {
-                    "device": "cpu",
-                    "pin_memory": True,
-                    },
-                },
+            # "kernel_inject": True,
+            "tensor_parallel": {
+                "tp_size": dist.get_world_size(),
+            },
+            "dtype": "fp16", # TODO: config
+            "enable_cuda_graph": False
         }
 
-        if base.is_transformer_model_type:
-            engine, _, _, _ = deepspeed.initialize(model=base.pipe.transformer, config=ds_config, dist_init_required=False)
-            base.pipe.transformer = DeepSpeedUNetProxy(engine)
-        else:
-            engine, _, _, _ = deepspeed.initialize(model=base.pipe.unet, config=ds_config, dist_init_required=False)
-            base.pipe.unet = DeepSpeedUNetProxy(engine)
+        for k in Common.TRANSFORMER_MODULE_NAMES:
+            if hasattr(base.pipe, k):
+                model = getattr(base.pipe, k)
+                if model is not None:
+                    if wrap_transformer is True:
+                        engine = deepspeed.init_inference(model=model, config=ds_config)
+                        setattr(base.pipe, k, engine.module)
+                    elif k not in base.offloaded_modules:
+                        setattr(base.pipe, k, model.to(f"cuda:{base.local_rank}"))
+            dist.barrier()
 
-        dist.barrier()
-        deepspeed_config = config
+        for k in Common.ENCODER_MODULE_NAMES:
+            if hasattr(base.pipe, k):
+                model = getattr(base.pipe, k)
+                if model is not None:
+                    if wrap_encoder is True:
+                        engine = deepspeed.init_inference(model=model, config=ds_config)
+                        setattr(base.pipe, k, engine.module)
+                    elif k not in base.offloaded_modules:
+                        setattr(base.pipe, k, model.to(f"cuda:{base.local_rank}"))
+            dist.barrier()
+
+        for k in Common.VAE_MODULE_NAMES:
+            if hasattr(base.pipe, k):
+                model = getattr(base.pipe, k)
+                if model is not None:
+                    if wrap_vae is True:
+                        engine = deepspeed.init_inference(model=model, config=ds_config)
+                        setattr(base.pipe, k, engine.module)
+                    elif k not in base.offloaded_modules:
+                        setattr(base.pipe, k, model.to(f"cuda:{base.local_rank}"))
+            dist.barrier()
+
+        for k in Common.MISC_MODULE_NAMES:
+            if hasattr(base.pipe, k):
+                model = getattr(base.pipe, k)
+                if model is not None:
+                    if wrap_misc is True:
+                        engine = deepspeed.init_inference(model=model, config=ds_config)
+                        setattr(base.pipe, k, engine.module)
+                    elif k not in base.offloaded_modules and hasattr(model, "to"):
+                        setattr(base.pipe, k, model.to(f"cuda:{base.local_rank}"))
+            dist.barrier()
+
         enable_cache_dit_runonce = False
     return result
 
@@ -221,20 +244,14 @@ def __generate_image_parallel(data):
             kwargs = base.setup_inference(data)
 
             # caching
-            enable_deepcache = (
-                base.can_use_deepcache is True
-                and deepspeed_config.get("deepcache_config") is not None
-            )
-            enable_cache_dit = (
-                base.can_use_cachedit is True
-                and deepspeed_config.get("cache_dit_config") is not None
-            )
+            enable_deepcache = base.can_use_deepcache is True and backend_config.get("deepcache_config") is not None
+            enable_cache_dit = base.can_use_cachedit is True and backend_config.get("cache_dit_config") is not None
             deepcache_config = None
             cache_dit_config = None
             if enable_deepcache:
-                deepcache_config = deepspeed_config.get("deepcache_config")
+                deepcache_config = backend_config.get("deepcache_config")
             if enable_cache_dit:
-                cache_dit_config = deepspeed_config.get("cache_dit_config")
+                cache_dit_config = backend_config.get("cache_dit_config")
 
             # inference
             if enable_deepcache:
@@ -246,22 +263,13 @@ def __generate_image_parallel(data):
             if enable_cache_dit:
                 cd_config = get_cache_dit_config(cache_dit_config)
                 if not enable_cache_dit_runonce:
-                    cache_dit.enable_cache(
-                        base.pipe,
-                        num_inference_steps=kwargs["num_inference_steps"],
-                        verbose=False,
-                        **cd_config,
-                    )
+                    cache_dit.enable_cache(base.pipe, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
                     enable_cache_dit_runonce = True
                     base.log(0, "ℹ️ CacheDiT enabled", rank_0_only=False)
                 else:
                     base.log(0, "ℹ️ Using CacheDiT", rank_0_only=False)
-                cache_dit.refresh_context(
-                    base.pipe.transformer,
-                    num_inference_steps=kwargs["num_inference_steps"],
-                    verbose=False,
-                    **cd_config,
-                )
+                cache_dit.refresh_context(base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
+
             start_time = time.perf_counter()
             output = base.pipe(**kwargs)
             end_time = time.perf_counter()

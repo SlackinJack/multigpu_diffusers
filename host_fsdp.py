@@ -12,8 +12,8 @@ from DeepCache import DeepCacheSDHelper
 from datetime import timedelta
 from flask import Flask, request, jsonify, cli
 from torch.distributed.device_mesh import init_device_mesh
-from torch.distributed.fsdp import fully_shard
-from collections import defaultdict
+from torch.distributed.fsdp import fully_shard, CPUOffloadPolicy
+from collections import defaultdict, Counter
 import torch.nn as nn
 
 
@@ -36,7 +36,7 @@ logging.getLogger("flask").disabled = True
 cli.show_server_banner = lambda *_: None
 app = Flask(__name__)
 base = None
-fsdp_config = None
+backend_config = None
 
 
 def __initialize_distributed_environment():
@@ -115,8 +115,8 @@ def handle_path(path):
 
 
 def __close_host():
-    global fsdp_config, dist
-    fsdp_config = None
+    global backend_config, dist
+    backend_config = None
     base.close_pipeline()
     dist.barrier()
     dist.destroy_process_group()
@@ -152,36 +152,99 @@ def __handle_sleep(data):
 
 
 def __apply_pipeline_parallel(data):
-    global fsdp_config, enable_cache_dit_runonce
+    global backend_config, enable_cache_dit_runonce
     # Params:
     # deep_cache
     # deep_cache_interval
     # deep_cache_id
     # cache_dit
-    config = data.get("backend")
-    assert config is not None, "Configuration must be provided"
+    backend_config = data.get("backend")
+    assert backend_config is not None, "Backend configuration must be provided"
 
-    with torch.no_grad():
-        result = base.setup_pipeline(data, backend_name="fsdp")
+    shard_transformer = backend_config["shard_transformer"]
+    shard_encoder = backend_config["shard_encoder"]
+    shard_vae = backend_config["shard_vae"]
+    shard_misc = backend_config["shard_misc"]
+
+    result = base.setup_pipeline(data, backend_name="fsdp")
+    dist.barrier()
 
     if result[1] == 200:
         base.log(1, "ℹ️ Initializing FSDP")
-        mesh = init_device_mesh("cuda", mesh_shape=(dist.get_world_size(),))
-        dist.barrier()
-        target = base.pipe.transformer if base.is_transformer_model_type else base.pipe.unet
 
-        # TODO: this should be up to the user
-        def shard_model(model):
-            target_names = ["transformer", "unet"]
-            for module in list(model.modules()):
-                class_name = type(module).__name__.lower()
-                if module is not model and any(name.lower() in class_name for name in target_names):
-                    fully_shard(module, mesh=mesh, reshard_after_forward=True)
-            fully_shard(model, mesh=mesh, reshard_after_forward=True)
+        # TODO: target names should be up to the user
+        def shard_model(model, mesh):
+            target_names = ["unet", "transformer", "model", "block", "2d", "3d", "causal", "encode", "decode"]
+            exclude_names = ["attn", "attention", "embed", "process", "modulation", "rotary", "resnet"] # "layer"
+            modules = list(model.modules())
 
-        shard_model(target)
-        dist.barrier()
-        fsdp_config = config
+            def matches(name, patterns):
+                name = name.lower()
+                return any(pattern.lower() in name for pattern in patterns)
+
+            targets = [
+                module
+                for module in modules
+                if module is not model
+                and matches(type(module).__name__, target_names)
+                and not matches(type(module).__name__, exclude_names)
+            ]
+
+            class_counts = Counter(type(module).__name__ for module in targets)
+            for class_name, count in class_counts.items():
+                base.log(2, f"ℹ️ Sharding {class_name}: {count} instance(s)")
+
+            # Shard deepest matching modules first, then the root.
+            for module in reversed(targets):
+                fully_shard(module, mesh=mesh, reshard_after_forward=True, offload_policy=CPUOffloadPolicy())
+            fully_shard(model, mesh=mesh, reshard_after_forward=False, offload_policy=CPUOffloadPolicy())
+
+
+        def shard_component(model):
+            mesh = init_device_mesh("cuda", mesh_shape=(dist.get_world_size(),))
+            shard_model(model, mesh)
+
+
+        for k in Common.TRANSFORMER_MODULE_NAMES:
+            if hasattr(base.pipe, k):
+                model = getattr(base.pipe, k)
+                if model is not None:
+                    if shard_transformer is True:
+                        shard_component(model)
+                    elif k not in base.offloaded_modules:
+                        setattr(base.pipe, k, model.to(f"cuda:{base.local_rank}"))
+            dist.barrier()
+
+        for k in Common.ENCODER_MODULE_NAMES:
+            if hasattr(base.pipe, k):
+                model = getattr(base.pipe, k)
+                if model is not None:
+                    if shard_encoder is True:
+                        shard_component(model)
+                    elif k not in base.offloaded_modules:
+                        setattr(base.pipe, k, model.to(f"cuda:{base.local_rank}"))
+            dist.barrier()
+
+        for k in Common.VAE_MODULE_NAMES:
+            if hasattr(base.pipe, k):
+                model = getattr(base.pipe, k)
+                if model is not None:
+                    if shard_vae is True:
+                        shard_component(model)
+                    elif k not in base.offloaded_modules:
+                        setattr(base.pipe, k, model.to(f"cuda:{base.local_rank}"))
+            dist.barrier()
+
+        for k in Common.MISC_MODULE_NAMES:
+            if hasattr(base.pipe, k):
+                model = getattr(base.pipe, k)
+                if model is not None:
+                    if shard_misc is True:
+                        shard_component(model)
+                    elif k not in base.offloaded_modules and hasattr(model, "to"):
+                        setattr(base.pipe, k, model.to(f"cuda:{base.local_rank}"))
+            dist.barrier()
+
         enable_cache_dit_runonce = False
     return result
 
@@ -199,20 +262,14 @@ def __generate_image_parallel(data):
             kwargs = base.setup_inference(data)
 
             # caching
-            enable_deepcache = (
-                base.can_use_deepcache is True
-                and fsdp_config.get("deepcache_config") is not None
-            )
-            enable_cache_dit = (
-                base.can_use_cachedit is True
-                and fsdp_config.get("cache_dit_config") is not None
-            )
+            enable_deepcache = base.can_use_deepcache is True and backend_config.get("deepcache_config") is not None
+            enable_cache_dit = base.can_use_cachedit is True and backend_config.get("cache_dit_config") is not None
             deepcache_config = None
             cache_dit_config = None
             if enable_deepcache:
-                deepcache_config = fsdp_config.get("deepcache_config")
+                deepcache_config = backend_config.get("deepcache_config")
             if enable_cache_dit:
-                cache_dit_config = fsdp_config.get("cache_dit_config")
+                cache_dit_config = backend_config.get("cache_dit_config")
 
             # inference
             if enable_deepcache:
@@ -224,22 +281,12 @@ def __generate_image_parallel(data):
             if enable_cache_dit:
                 cd_config = get_cache_dit_config(cache_dit_config)
                 if not enable_cache_dit_runonce:
-                    cache_dit.enable_cache(
-                        base.pipe,
-                        num_inference_steps=kwargs["num_inference_steps"],
-                        verbose=False,
-                        **cd_config,
-                    )
+                    cache_dit.enable_cache(base.pipe, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
                     enable_cache_dit_runonce = True
                     base.log(0, "ℹ️ CacheDiT enabled", rank_0_only=False)
                 else:
                     base.log(0, "ℹ️ Using CacheDiT", rank_0_only=False)
-                cache_dit.refresh_context(
-                    base.pipe.transformer,
-                    num_inference_steps=kwargs["num_inference_steps"],
-                    verbose=False,
-                    **cd_config,
-                )
+                cache_dit.refresh_context(base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
             start_time = time.perf_counter()
             output = base.pipe(**kwargs)
             end_time = time.perf_counter()
