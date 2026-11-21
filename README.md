@@ -9,14 +9,6 @@ Python Flask hosts for multi-GPU Diffusers inferencing solutions.
 - This repo mainly exists for [multigpu_diffusers_comfyui](https://github.com/SlackinJack/multigpu_diffusers_comfyui), which provides ComfyUI nodes to run everything here.
 
 
-## Supported Model Types:
-- FLUX.1, FLUX.2
-- Krea2
-- Qwen Image 2.1
-- StableDiffusion 1, 2, 3, XL, Upscale, StableVideoDiffusion
-- Z-Image
-
-
 ## Usage:
 - (Review and) run `setup.sh`. If you want to use a venv, ensure that it is active before running.
 - For AsyncDiff host, run `torchrun --master_port={master_port} --nproc_per_node={n_gpus} host_asyncdiff.py --port={port}`
