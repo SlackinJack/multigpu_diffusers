@@ -443,7 +443,9 @@ class CommonHost:
                     pipeline_class_name = self.pipeline_name
                 self.log(0, f"ℹ️ Loading pipeline {pipeline_class_name}")
                 pipeline_class = getattr(diffusers, pipeline_class_name)
-                self.is_image_model = not any(name.lower() in pipeline_class_name.lower() for name in KNOWN_VIDEO_PIPELINE_NAMES_PARTIAL)
+                self.is_image_model = not any(
+                    name.lower() in pipeline_class_name.lower() for name in KNOWN_VIDEO_PIPELINE_NAMES_PARTIAL
+                )
                 self.backend_name = backend_name
 
                 # torch tweaks
@@ -503,7 +505,9 @@ class CommonHost:
                                 transformer_kwargs = {}
                                 if self.backend_name in ["parallel"] and data.get("tp_config") is not None:
                                     transformer_kwargs = {"parallel_config": data["tp_config"]}
-                                kwargs["transformer" if self.is_transformer_model_type else "unet"] = self.load_model(v, model_args=transformer_kwargs)
+                                kwargs["transformer" if self.is_transformer_model_type else "unet"] = self.load_model(
+                                    v, model_args=transformer_kwargs
+                                )
                         else:
                             if isinstance(v, torch.nn.Module):
                                 kwargs[k] = v
@@ -770,8 +774,11 @@ class CommonHost:
             config_path = model_dict.get("config_path")
             assert config_path is not None, "You must provide a config_path when loading from a single file"
 
-        self.log(0, f"""ℹ️ Loading model: {model_path}
-        with config: {str(config_path)}""")
+        self.log(
+            0,
+            f"""ℹ️ Loading model: {model_path}
+        with config: {str(config_path)}""",
+        )
         kwargs = {}
         kwargs["torch_dtype"] = self.vae_dtype if is_vae is True else self.torch_dtype
         kwargs["use_safetensors"] = True
@@ -838,8 +845,11 @@ class CommonHost:
             config_path = model_dict.get("config_path")
             assert config_path is not None, "You must provide a config_path when loading from a single file"
 
-        self.log(0, f"""ℹ️ Loading model: {model_path}
-        with config: {str(config_path)}""")
+        self.log(
+            0,
+            f"""ℹ️ Loading model: {model_path}
+        with config: {str(config_path)}""",
+        )
 
         kwargs = {}
         kwargs["dtype"] = self.torch_dtype
@@ -954,8 +964,8 @@ class CommonHost:
             data["image"] = decode_b64_and_unpickle(data["image"])
         if data.get("control_image") is not None:
             data["control_image"] = decode_b64_and_unpickle(data["control_image"])
-        if data.get("latent") is not None:
-            data["latent"] = decode_b64_and_unpickle(data["latent"])
+        if data.get("latents") is not None:
+            data["latents"] = decode_b64_and_unpickle(data["latents"])
         if data.get("prompt_embeds") is not None:
             data["prompt_embeds"] = decode_b64_and_unpickle(data["prompt_embeds"])
         if data.get("pooled_prompt_embeds") is not None:
@@ -1074,9 +1084,24 @@ class CommonHost:
         if data.get("scheduler") is not None:
             del data["scheduler"]
 
-        # process input latent
-        if data.get("latent") is not None:
-            data["latent"] = self.process_input_latent(data["latent"])
+        # process input latents
+        if data.get("latents") is not None:
+            data["latents"] = self.process_input_latent(data["latents"])
+            n_dim = int(data["latents"].shape[0])
+            if data.get("num_images_per_prompt") is not None or data.get("num_videos_per_prompt") is not None:
+                batch = data.get("num_images_per_prompt") or data.get("num_videos_per_prompt")
+                if batch != n_dim:
+                    self.log(0, "ℹ️ Ignoring wrong batch size - using batch size from latents")
+                    if data.get("num_images_per_prompt") is not None:
+                        data["num_images_per_prompt"] = n_dim
+                    else:
+                        data["num_videos_per_prompt"] = n_dim
+            else:
+                if self.is_image_model:
+                    data["num_images_per_prompt"] = n_dim
+                else:
+                    data["num_videos_per_prompt"] = n_dim
+                self.log(0, f"ℹ️ Assuming a batch size of {n_dim} from latents")
 
         # set up progress bar
         def set_step_progress(pipe, index, timestep, callback_kwargs):
@@ -1096,12 +1121,12 @@ class CommonHost:
                         pass
 
             # start_step workaround
-            if data.get("latent") is not None and self.pipeline_name in START_STEP_WORKAROUND_PIPELINES:
+            if data.get("latents") is not None and self.pipeline_name in START_STEP_WORKAROUND_PIPELINES:
                 if the_index == data.get("start_step", 0):
                     self.log(0, f"ℹ️ Injecting latent at step {str(the_index)}", rank_0_only=False)
-                    callback_kwargs["latents"] = data["latent"]
+                    callback_kwargs["latents"] = data["latents"]
                 elif the_index < data.get("start_step", 0):
-                    callback_kwargs["latents"] = torch.zeros_like(data["latent"])
+                    callback_kwargs["latents"] = torch.zeros_like(data["latents"])
 
             # end calculations
             end = data["num_inference_steps"]

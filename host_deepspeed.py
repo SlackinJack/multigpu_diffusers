@@ -179,8 +179,8 @@ def __apply_pipeline_parallel(data):
             "tensor_parallel": {
                 "tp_size": dist.get_world_size(),
             },
-            "dtype": "fp16", # TODO: config
-            "enable_cuda_graph": False
+            "dtype": "fp16",  # TODO: config
+            "enable_cuda_graph": False,
         }
 
         for k in Common.TRANSFORMER_MODULE_NAMES:
@@ -263,12 +263,16 @@ def __generate_image_parallel(data):
             if enable_cache_dit:
                 cd_config = get_cache_dit_config(cache_dit_config)
                 if not enable_cache_dit_runonce:
-                    cache_dit.enable_cache(base.pipe, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
+                    cache_dit.enable_cache(
+                        base.pipe, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config
+                    )
                     enable_cache_dit_runonce = True
                     base.log(0, "ℹ️ CacheDiT enabled", rank_0_only=False)
                 else:
                     base.log(0, "ℹ️ Using CacheDiT", rank_0_only=False)
-                cache_dit.refresh_context(base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
+                cache_dit.refresh_context(
+                    base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config
+                )
 
             start_time = time.perf_counter()
             output = base.pipe(**kwargs)
@@ -293,7 +297,7 @@ def __generate_image_parallel(data):
                         output_images = base.get_output_images(output_images, data)
                         images = base.convert_latent_to_image(output_images)
                         latents = base.convert_latent_to_output_latent(output_images)
-                        images = pickle_and_encode_b64(images[0])
+                        images = pickle_and_encode_b64(images)
                         latents = pickle_and_encode_b64(latents)
                         base.pipe.vae = base.pipe.vae.to("cpu")
                         return {

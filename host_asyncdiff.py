@@ -324,7 +324,7 @@ def __generate_image_parallel(data):
                         output_images = base.get_output_images(output_images, data)
                         images = base.convert_latent_to_image(output_images)
                         latents = base.convert_latent_to_output_latent(output_images)
-                        images = pickle_and_encode_b64(images[0])
+                        images = pickle_and_encode_b64(images)
                         latents = pickle_and_encode_b64(latents)
                         return {
                             "message": "OK",

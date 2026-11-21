@@ -219,7 +219,9 @@ def __generate_image_parallel(data):
                 base.log(0, "ℹ️ CacheDiT enabled", rank_0_only=False)
             else:
                 base.log(0, "ℹ️ Using CacheDiT", rank_0_only=False)
-            cache_dit.refresh_context(base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
+            cache_dit.refresh_context(
+                base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config
+            )
 
         start_time = time.perf_counter()
         output = base.pipe(**kwargs)
@@ -242,7 +244,7 @@ def __generate_image_parallel(data):
                     output_images = base.get_output_images(output_images, data)
                     images = base.convert_latent_to_image(output_images)
                     latents = base.convert_latent_to_output_latent(output_images)
-                    images = pickle_and_encode_b64(images[0])
+                    images = pickle_and_encode_b64(images)
                     latents = pickle_and_encode_b64(latents)
                     return {
                         "message": "OK",

@@ -174,12 +174,14 @@ def __apply_pipeline_parallel(data):
         assert requested_world_size == dist.get_world_size(), "(tp * ulysses * ring) needs to be equal to world size"
         mesh = init_device_mesh("cuda", (tp_degree, ring_degree, ulysses_degree), mesh_dim_names=("tp", "ring", "ulysses"))
         tp_mesh, cp_mesh = mesh["tp"], mesh["ring", "ulysses"]
-        base.log(0, f"ℹ️ Device mesh created with size {dist.get_world_size()} (T:{tp_degree}|U:{ulysses_degree}|R:{ring_degree})")
+        base.log(
+            0, f"ℹ️ Device mesh created with size {dist.get_world_size()} (T:{tp_degree}|U:{ulysses_degree}|R:{ring_degree})"
+        )
 
         def move_pipe_components():
             components_to_move = [k for k, v in base.pipe.components.items()]
             components_to_move = [k for k in components_to_move if k not in base.offloaded_modules]
-            component_names_to_check = (Common.ENCODER_MODULE_NAMES + Common.VAE_MODULE_NAMES + Common.MISC_MODULE_NAMES)
+            component_names_to_check = Common.ENCODER_MODULE_NAMES + Common.VAE_MODULE_NAMES + Common.MISC_MODULE_NAMES
             for k in component_names_to_check:
                 if data.get(k) is not None and data[k].get("device_map") is not None:
                     components_to_move = [k2 for k2 in components_to_move if k2 != k]
@@ -309,12 +311,16 @@ def __generate_image_parallel(data):
             if enable_cache_dit:
                 cd_config = get_cache_dit_config(cache_dit_config)
                 if not enable_cache_dit_runonce:
-                    cache_dit.enable_cache(base.pipe, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
+                    cache_dit.enable_cache(
+                        base.pipe, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config
+                    )
                     enable_cache_dit_runonce = True
                     base.log(0, "ℹ️ CacheDiT enabled", rank_0_only=False)
                 else:
                     base.log(0, "ℹ️ Using CacheDiT", rank_0_only=False)
-                cache_dit.refresh_context(base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
+                cache_dit.refresh_context(
+                    base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config
+                )
 
             start_time = time.perf_counter()
             output = base.pipe(**kwargs)
@@ -337,7 +343,7 @@ def __generate_image_parallel(data):
                     output_images = base.get_output_images(output_images, data)
                     images = base.convert_latent_to_image(output_images)
                     latents = base.convert_latent_to_output_latent(output_images)
-                    images = pickle_and_encode_b64(images[0])
+                    images = pickle_and_encode_b64(images)
                     latents = pickle_and_encode_b64(latents)
                     return {
                         "message": "OK",

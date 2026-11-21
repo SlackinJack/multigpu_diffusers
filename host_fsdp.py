@@ -175,7 +175,7 @@ def __apply_pipeline_parallel(data):
         # TODO: target names should be up to the user
         def shard_model(model, mesh):
             target_names = ["unet", "transformer", "model", "block", "2d", "3d", "causal", "encode", "decode"]
-            exclude_names = ["attn", "attention", "embed", "process", "modulation", "rotary", "resnet"] # "layer"
+            exclude_names = ["attn", "attention", "embed", "process", "modulation", "rotary", "resnet"]  # "layer"
             modules = list(model.modules())
 
             def matches(name, patterns):
@@ -199,11 +199,9 @@ def __apply_pipeline_parallel(data):
                 fully_shard(module, mesh=mesh, reshard_after_forward=True, offload_policy=CPUOffloadPolicy())
             fully_shard(model, mesh=mesh, reshard_after_forward=False, offload_policy=CPUOffloadPolicy())
 
-
         def shard_component(model):
             mesh = init_device_mesh("cuda", mesh_shape=(dist.get_world_size(),))
             shard_model(model, mesh)
-
 
         for k in Common.TRANSFORMER_MODULE_NAMES:
             if hasattr(base.pipe, k):
@@ -281,12 +279,16 @@ def __generate_image_parallel(data):
             if enable_cache_dit:
                 cd_config = get_cache_dit_config(cache_dit_config)
                 if not enable_cache_dit_runonce:
-                    cache_dit.enable_cache(base.pipe, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
+                    cache_dit.enable_cache(
+                        base.pipe, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config
+                    )
                     enable_cache_dit_runonce = True
                     base.log(0, "ℹ️ CacheDiT enabled", rank_0_only=False)
                 else:
                     base.log(0, "ℹ️ Using CacheDiT", rank_0_only=False)
-                cache_dit.refresh_context(base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config)
+                cache_dit.refresh_context(
+                    base.pipe.transformer, num_inference_steps=kwargs["num_inference_steps"], verbose=False, **cd_config
+                )
             start_time = time.perf_counter()
             output = base.pipe(**kwargs)
             end_time = time.perf_counter()
@@ -310,7 +312,7 @@ def __generate_image_parallel(data):
                         output_images = base.get_output_images(output_images, data)
                         images = base.convert_latent_to_image(output_images)
                         latents = base.convert_latent_to_output_latent(output_images)
-                        images = pickle_and_encode_b64(images[0])
+                        images = pickle_and_encode_b64(images)
                         latents = pickle_and_encode_b64(latents)
                         base.pipe.vae = base.pipe.vae.to("cpu")
                         return {
